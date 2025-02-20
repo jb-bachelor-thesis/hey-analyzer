@@ -207,8 +207,11 @@ class ResultsGenerator:
         self.output_dir.mkdir(exist_ok=True)
 
     def generate_scenario_graphs(self, test_suite: TestSuite, scenario: int):
-        """Generate response time and requests/sec graphs for a scenario"""
+        """Generate response time and requests/sec graphs for a scenario."""
         scenario_data = test_suite.get_scenario_data(scenario)
+
+        # Derive the scenario name
+        scenario_name = Run([], scenario, 1, 1).scenario_name
 
         # Prepare data for plotting
         concurrent_users = sorted(scenario_data.keys())
@@ -219,7 +222,7 @@ class ResultsGenerator:
             scenario_data, concurrent_users, modes,
             'response_times', 'Average Response Time',
             f'response_time_scenario_{scenario}.png',
-            'Response Time (ms)', log_scale=True
+            'Response Time (ms)', scenario_name, log_scale=True
         )
 
         # Plot requests per second
@@ -227,10 +230,10 @@ class ResultsGenerator:
             scenario_data, concurrent_users, modes,
             'requests_per_second', 'Requests per Second',
             f'requests_per_second_scenario_{scenario}.png',
-            'Requests/Second', log_scale=True
+            'Requests/Second', scenario_name, log_scale=True
         )
 
-    def _create_plot(self, data, x_values, modes, metric, title, filename, y_label, log_scale=False):
+    def _create_plot(self, data, x_values, modes, metric, title, filename, y_label, scenario_name, log_scale=False):
         plt.figure(figsize=(10, 6))
 
         colors = ['blue', 'red', 'green']
@@ -249,7 +252,7 @@ class ResultsGenerator:
 
         plt.xlabel('Concurrent Users')
         plt.ylabel(y_label)
-        plt.title(f'{title} - Scenario {data["scenario_name"]}')
+        plt.title(f'{title} - Scenario {scenario_name}')
         plt.grid(True, which="both", ls="-", alpha=0.2)
         plt.legend()
 
