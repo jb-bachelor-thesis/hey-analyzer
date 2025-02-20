@@ -250,7 +250,9 @@ class ResultsGenerator:
             plt.plot(x_values, y_values, color=color, label=label,
                      marker=marker, linestyle='-', linewidth=2, markersize=8)
 
-        plt.xlabel('Concurrent Users')
+        # plt.xlabel('Concurrent Users')
+        # TODO: instead of run this should be the actual batch size on the x-axis
+        plt.xlabel('Run')
         plt.ylabel(y_label)
         plt.title(f'{title} - Scenario {scenario_name}')
         plt.grid(True, which="both", ls="-", alpha=0.2)
@@ -274,7 +276,7 @@ class ResultsGenerator:
             summary.append(f"## Scenario {scenario}: {Run([], scenario, 1, 1).scenario_name}\n")
 
             summary.append("### Response Times (ms)\n")
-            summary.append("| Concurrent Users | Thread Pool | Virtual Threads | WebFlux |")
+            summary.append("| Run | Thread Pool | Virtual Threads | WebFlux |")
             summary.append("|-----------------|-------------|----------------|---------|")
 
             for users in sorted(scenario_data.keys()):
@@ -286,7 +288,7 @@ class ResultsGenerator:
                 summary.append(f"| {users} | {values[0]} | {values[1]} | {values[2]} |")
 
             summary.append("\n### Requests per Second\n")
-            summary.append("| Concurrent Users | Thread Pool | Virtual Threads | WebFlux |")
+            summary.append("| Run | Thread Pool | Virtual Threads | WebFlux |")
             summary.append("|-----------------|-------------|----------------|---------|")
 
             for users in sorted(scenario_data.keys()):
