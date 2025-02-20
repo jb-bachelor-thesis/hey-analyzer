@@ -1,14 +1,16 @@
-from dataclasses import dataclass, field
-from typing import List, Dict
-from pathlib import Path
 import re
+from dataclasses import dataclass, field
+from pathlib import Path
+from statistics import median
+from typing import List, Dict
+
+import matplotlib.pyplot as plt
 import pandas as pd
-from datetime import datetime
 
 
 @dataclass
 class CSVEntry:
-    """Repräsentiert eine einzelne Zeile aus der CSV-Datei"""
+    """Represents a single line from the CSV file"""
     response_time: float
     dns_dialup: float
     dns: float
@@ -21,7 +23,7 @@ class CSVEntry:
 
 @dataclass
 class Batch:
-    """Repräsentiert einen Batch (1/4 der Anfragen eines Runs)"""
+    """Represents a batch (1/4 of the requests of a run)"""
     entries: List[CSVEntry]
     batch_number: int  # 1-4
     batch_size: int = field(init=False)
@@ -33,10 +35,16 @@ class Batch:
     def avg_response_time(self) -> float:
         return sum(entry.response_time for entry in self.entries) / len(self.entries)
 
+    @property
+    def requests_per_second(self) -> float:
+        # Maximum duration in the batch divided by number of requests
+        max_duration = max(entry.response_time for entry in self.entries)
+        return self.batch_size / max_duration if max_duration > 0 else 0
+
 
 @dataclass
 class BatchGroup:
-    """Repräsentiert alle 4 Batches eines Runs"""
+    """Represents all 4 batches of a run"""
     batches: List[Batch]
     run_number: int  # V in filename
     test_number: int  # W in filename
@@ -45,14 +53,26 @@ class BatchGroup:
     def total_requests(self) -> int:
         return sum(batch.batch_size for batch in self.batches)
 
+    @property
+    def median_response_time(self) -> float:
+        """Calculate median response time from batches 2, 3, and 4"""
+        stable_batches = [b.avg_response_time for b in self.batches[1:]]  # Skip first batch
+        return median(stable_batches)
+
+    @property
+    def median_requests_per_second(self) -> float:
+        """Calculate median requests per second from batches 2, 3, and 4"""
+        stable_batches = [b.requests_per_second for b in self.batches[1:]]  # Skip first batch
+        return median(stable_batches)
 
 
 @dataclass
 class Run:
-    """Repräsentiert einen kompletten Run mit Szenario und Modus"""
+    """Represents a complete run with scenario and mode"""
     batch_groups: List[BatchGroup]
     scenario: int  # Y in path (1-3)
     mode: int  # Z in path (1-3)
+    concurrent_users: int  # W from filename
 
     @property
     def scenario_name(self) -> str:
@@ -66,16 +86,26 @@ class Run:
     @property
     def mode_name(self) -> str:
         modes = {
-            1: "Spring MVC",
-            2: "Spring MVC with Virtual Threads",
+            1: "Spring MVC Thread Pool",
+            2: "Spring MVC Virtual Threads",
             3: "Spring WebFlux"
         }
         return modes.get(self.mode, "Unknown")
 
+    @property
+    def avg_response_time(self) -> float:
+        """Average response time across all batch groups"""
+        return median([bg.median_response_time for bg in self.batch_groups])
+
+    @property
+    def avg_requests_per_second(self) -> float:
+        """Average requests per second across all batch groups"""
+        return median([bg.median_requests_per_second for bg in self.batch_groups])
+
 
 @dataclass
 class TestSuite:
-    """Hauptklasse, die alle Runs pro PC verwaltet"""
+    """Main class managing all runs per PC"""
     pc_runs: Dict[str, List[Run]] = field(default_factory=dict)
 
     def add_run(self, pc_name: str, run: Run):
@@ -83,9 +113,25 @@ class TestSuite:
             self.pc_runs[pc_name] = []
         self.pc_runs[pc_name].append(run)
 
+    def get_scenario_data(self, scenario: int) -> Dict[int, Dict[str, List[float]]]:
+        """Get aggregated data for a specific scenario across all PCs"""
+        mode_data = {}
+        for runs in self.pc_runs.values():
+            scenario_runs = [r for r in runs if r.scenario == scenario]
+            for run in scenario_runs:
+                if run.concurrent_users not in mode_data:
+                    mode_data[run.concurrent_users] = {
+                        'response_times': {1: [], 2: [], 3: []},
+                        'requests_per_second': {1: [], 2: [], 3: []}
+                    }
+                mode_data[run.concurrent_users]['response_times'][run.mode].append(run.avg_response_time)
+                mode_data[run.concurrent_users]['requests_per_second'][run.mode].append(run.avg_requests_per_second)
+
+        return mode_data
+
 
 class CSVParser:
-    """Hilfsklasse zum Parsen der CSV-Dateien und Erstellen der Objektstruktur"""
+    """Helper class for parsing CSV files and creating object structure"""
 
     @staticmethod
     def parse_csv_entry(row) -> CSVEntry:
@@ -102,7 +148,7 @@ class CSVParser:
 
     @staticmethod
     def parse_path_info(path: Path) -> tuple[str, int, int]:
-        """Extrahiert PC, Szenario und Modus aus dem Pfad"""
+        """Extract PC, scenario and mode from path"""
         match = re.match(r'cnc(\w+)_(\d+)-(\d+)', path.parent.name)
         if not match:
             raise ValueError(f"Invalid path format: {path}")
@@ -110,7 +156,7 @@ class CSVParser:
 
     @staticmethod
     def parse_filename_info(filename: str) -> tuple[int, int]:
-        """Extrahiert Run-Nummer und Test-Nummer aus dem Dateinamen"""
+        """Extract run number and test number from filename"""
         match = re.match(r'result-\d+_\d+-(\d+)-(\d+)\.csv', filename)
         if not match:
             raise ValueError(f"Invalid filename format: {filename}")
@@ -118,15 +164,15 @@ class CSVParser:
 
     @classmethod
     def parse_file(cls, file_path: Path) -> tuple[str, Run]:
-        """Parst eine einzelne CSV-Datei und erstellt die entsprechenden Objekte"""
+        """Parse a single CSV file and create corresponding objects"""
         pc_name, scenario, mode = cls.parse_path_info(file_path)
         run_number, test_number = cls.parse_filename_info(file_path.name)
 
-        # CSV einlesen
+        # Read CSV
         df = pd.read_csv(file_path)
         entries = [cls.parse_csv_entry(row) for _, row in df.iterrows()]
 
-        # Batches erstellen (4 gleich große Gruppen)
+        # Create batches (4 equal-sized groups)
         batch_size = len(entries) // 4
         batches = []
         for i in range(4):
@@ -135,25 +181,127 @@ class CSVParser:
             batch_entries = entries[start_idx:end_idx]
             batches.append(Batch(entries=batch_entries, batch_number=i + 1))
 
-        # BatchGroup erstellen
+        # Create BatchGroup
         batch_group = BatchGroup(
             batches=batches,
             run_number=run_number,
             test_number=test_number
         )
 
-        # Run erstellen
+        # Create Run
         run = Run(
             batch_groups=[batch_group],
             scenario=scenario,
-            mode=mode
+            mode=mode,
+            concurrent_users=test_number
         )
 
         return pc_name, run
 
 
+class ResultsGenerator:
+    """Class for generating graphs and summary reports"""
+
+    def __init__(self, output_dir: str = "./output"):
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(exist_ok=True)
+
+    def generate_scenario_graphs(self, test_suite: TestSuite, scenario: int):
+        """Generate response time and requests/sec graphs for a scenario"""
+        scenario_data = test_suite.get_scenario_data(scenario)
+
+        # Prepare data for plotting
+        concurrent_users = sorted(scenario_data.keys())
+        modes = [1, 2, 3]
+
+        # Plot response times
+        self._create_plot(
+            scenario_data, concurrent_users, modes,
+            'response_times', 'Average Response Time',
+            f'response_time_scenario_{scenario}.png',
+            'Response Time (ms)', log_scale=True
+        )
+
+        # Plot requests per second
+        self._create_plot(
+            scenario_data, concurrent_users, modes,
+            'requests_per_second', 'Requests per Second',
+            f'requests_per_second_scenario_{scenario}.png',
+            'Requests/Second', log_scale=True
+        )
+
+    def _create_plot(self, data, x_values, modes, metric, title, filename, y_label, log_scale=False):
+        plt.figure(figsize=(10, 6))
+
+        colors = ['blue', 'red', 'green']
+        labels = ['Thread Pool', 'Virtual Threads', 'WebFlux']
+        markers = ['s', 'o', '^']
+
+        for mode, color, label, marker in zip(modes, colors, labels, markers):
+            y_values = []
+            for x in x_values:
+                values = data[x][metric][mode]
+                avg = sum(values) / len(values) if values else 0
+                y_values.append(avg)
+
+            plt.plot(x_values, y_values, color=color, label=label,
+                     marker=marker, linestyle='-', linewidth=2, markersize=8)
+
+        plt.xlabel('Concurrent Users')
+        plt.ylabel(y_label)
+        plt.title(f'{title} - Scenario {data["scenario_name"]}')
+        plt.grid(True, which="both", ls="-", alpha=0.2)
+        plt.legend()
+
+        if log_scale:
+            plt.yscale('log')
+        plt.xscale('log', base=2)
+        plt.xticks(x_values, [str(x) for x in x_values])
+
+        plt.tight_layout()
+        plt.savefig(self.output_dir / filename)
+        plt.close()
+
+    def generate_markdown_summary(self, test_suite: TestSuite):
+        """Generate markdown summary of results"""
+        summary = ["# Performance Test Results Summary\n"]
+
+        for scenario in range(1, 4):
+            scenario_data = test_suite.get_scenario_data(scenario)
+            summary.append(f"## Scenario {scenario}: {Run([], scenario, 1, 1).scenario_name}\n")
+
+            summary.append("### Response Times (ms)\n")
+            summary.append("| Concurrent Users | Thread Pool | Virtual Threads | WebFlux |")
+            summary.append("|-----------------|-------------|----------------|---------|")
+
+            for users in sorted(scenario_data.keys()):
+                values = []
+                for mode in range(1, 4):
+                    mode_values = scenario_data[users]['response_times'][mode]
+                    avg = f"{sum(mode_values) / len(mode_values):.2f}" if mode_values else "N/A"
+                    values.append(avg)
+                summary.append(f"| {users} | {values[0]} | {values[1]} | {values[2]} |")
+
+            summary.append("\n### Requests per Second\n")
+            summary.append("| Concurrent Users | Thread Pool | Virtual Threads | WebFlux |")
+            summary.append("|-----------------|-------------|----------------|---------|")
+
+            for users in sorted(scenario_data.keys()):
+                values = []
+                for mode in range(1, 4):
+                    mode_values = scenario_data[users]['requests_per_second'][mode]
+                    avg = f"{sum(mode_values) / len(mode_values):.2f}" if mode_values else "N/A"
+                    values.append(avg)
+                summary.append(f"| {users} | {values[0]} | {values[1]} | {values[2]} |")
+
+            summary.append("\n")
+
+        with open(self.output_dir / "summary.md", "w") as f:
+            f.write("\n".join(summary))
+
+
 def process_directory(input_dir: str) -> TestSuite:
-    """Verarbeitet alle CSV-Dateien in einem Verzeichnis und erstellt eine TestSuite"""
+    """Process all CSV files in a directory and create a TestSuite"""
     test_suite = TestSuite()
     input_path = Path(input_dir)
 
@@ -167,19 +315,16 @@ def process_directory(input_dir: str) -> TestSuite:
     return test_suite
 
 
-# Beispiel-Verwendung:
 if __name__ == "__main__":
+    # Create test suite from input directory
     test_suite = process_directory("input")
 
-    # Beispiel für Zugriff auf die Daten:
-    for pc_name, runs in test_suite.pc_runs.items():
-        print(f"\nPC: {pc_name}")
-        for run in runs:
-            print(f"  Scenario: {run.scenario_name}")
-            print(f"  Mode: {run.mode_name}")
-            for batch_group in run.batch_groups:
-                print(f"    Run {batch_group.run_number}, Test {batch_group.test_number}")
-                print(f"    Total requests: {batch_group.total_requests}")
-                for batch in batch_group.batches:
-                    print(f"      Batch {batch.batch_number}: "
-                          f"Avg response time: {batch.avg_response_time:.3f}ms")
+    # Generate results
+    results_gen = ResultsGenerator()
+
+    # Generate graphs for each scenario
+    for scenario in range(1, 4):
+        results_gen.generate_scenario_graphs(test_suite, scenario)
+
+    # Generate markdown summary
+    results_gen.generate_markdown_summary(test_suite)
