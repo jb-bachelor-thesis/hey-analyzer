@@ -78,4 +78,5 @@ fabric.properties
 
 # project-specific
 /input
+/old_input
 /output

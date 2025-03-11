@@ -77,9 +77,9 @@ class Run:
     @property
     def scenario_name(self) -> str:
         scenarios = {
-            1: "Wait 5 Seconds",
-            2: "CPU intensive Matrix-Multiplication",
-            3: "IO-heavy db app"
+            1: "Wait 5 Seconds (IO-heavy)",
+            2: "Matrix-Multiplication (CPU-heavy)",
+            3: "External Database App (IO-heavy)"
         }
         return scenarios.get(self.scenario, "Unknown")
 
@@ -254,7 +254,7 @@ class ResultsGenerator:
         # TODO: instead of run this should be the actual batch size on the x-axis
         plt.xlabel('Run')
         plt.ylabel(y_label)
-        plt.title(f'{title} - Scenario {scenario_name}')
+        plt.title(f'{title} - Workload: {scenario_name}')
         plt.grid(True, which="both", ls="-", alpha=0.2)
         plt.legend()
 
